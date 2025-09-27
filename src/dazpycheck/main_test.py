@@ -55,7 +55,9 @@ class TestDazpycheck(unittest.TestCase):
         source_file = os.path.join(self.test_project_dir, "my_module.py")
         test_file = os.path.join(self.test_project_dir, "my_module_test.py")
         with open(source_file, "w") as f:
-            f.write("def my_function():\n    return 1\n\n\ndef another_function():\n    return 2\n")
+            f.write(
+                "def my_function():\n    return 1\n\n\ndef another_function():\n    return 2\n"
+            )
         with open(test_file, "w") as f:
             f.write(
                 "import unittest\nfrom my_module import my_function\n\n\n"
@@ -72,7 +74,9 @@ class TestDazpycheck(unittest.TestCase):
         source_file = os.path.join(self.test_project_dir, "my_module.py")
         test_file = os.path.join(self.test_project_dir, "my_module_test.py")
         with open(source_file, "w") as f:
-            f.write("def my_function():\n    return 1\n\ndef another_function():\n    return 2\n")
+            f.write(
+                "def my_function():\n    return 1\n\ndef another_function():\n    return 2\n"
+            )
         with open(test_file, "w") as f:
             f.write(
                 "import unittest\nfrom my_module import my_function\n\n"
@@ -91,5 +95,5 @@ class TestDazpycheck(unittest.TestCase):
         self.assertEqual(result, 1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

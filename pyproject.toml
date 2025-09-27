@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dazpycheck"
-version = "0.1.0"
+dynamic = ["version"]
 authors = [
   { name="Darren Oakey", email="darren@oakey.net" },
 ]
@@ -20,3 +20,12 @@ classifiers = [
 
 [project.scripts]
 dazpycheck = "dazpycheck.main:cli"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "dazpycheck.__version__"}
