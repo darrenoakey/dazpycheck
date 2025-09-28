@@ -75,12 +75,12 @@ if not m:
 maj, minor, patch = map(int, m.groups())
 minor, patch = minor + 1, 0
 new = f"{maj}.{minor}.{patch}"
-text = re.sub(r"^(__version__ = ['\"])(\d+)\.(\d+)\.(\d+)(['\"])", rf"\g<1>{new}\g<4>", text, flags=re.M)
+text = re.sub(r"^(__version__ = ['\"])(\d+)\.(\d+)\.(\d+)(['\"])", rf"\g<1>{new}\g<5>", text, flags=re.M)
 p.write_text(text, encoding="utf-8")
 print(new)
 PY
 
-    NEW_VER=$(python - <<'PY'
+    NEW_VER=$(python - <<PY
 from pathlib import Path
 import re
 p = Path("$VERSION_FILE")

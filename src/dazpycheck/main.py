@@ -57,15 +57,23 @@ def run_test_on_file(file_path):
         )
 
     # Add the directory of the test file to the python path
-    sys.path.insert(0, os.path.dirname(file_path))
+    test_dir = os.path.dirname(file_path)
+    sys.path.insert(0, test_dir)
 
-    cov = coverage.Coverage(source=[source_file])
+    # Use relative path for coverage tracking to match how modules are imported
+    source_module = os.path.basename(source_file)
+    cov = coverage.Coverage(source=[test_dir])
     cov.start()
 
-    # Try pytest first, then fall back to unittest
-    pytest_success, pytest_message = run_command(
-        ["python", "-m", "pytest", file_path, "-q", "--tb=no"]
-    )
+    # Try pytest first - but run it in-process, not as subprocess
+    try:
+        import pytest
+
+        # Run pytest programmatically to avoid subprocess issues
+        exit_code = pytest.main([file_path, "-q", "--tb=no"])
+        pytest_success = exit_code == 0
+    except ImportError:
+        pytest_success = False
 
     if not pytest_success:
         # Try unittest as fallback
@@ -87,7 +95,9 @@ def run_test_on_file(file_path):
     cov.save()
 
     try:
-        filename, statements, excluded, missing, formatted = cov.analysis2(source_file)
+        filename, statements, excluded, missing, formatted = cov.analysis2(
+            source_module
+        )
         total_statements = len(statements)
         executed_statements = total_statements - len(missing)
         coverage_percentage = (
@@ -138,10 +148,11 @@ def main(directory, fix, single_thread, full):
     has_errors = False
     for py_file in py_files:
         if not py_file.endswith("_test.py"):
-            # Skip setup.py and build directory
+            # Skip setup.py, __init__.py, and build directory
             if (
                 py_file.endswith("/setup.py")
                 or py_file == "setup.py"
+                or py_file.endswith("/__init__.py")
                 or "/build/" in py_file
             ):
                 continue
@@ -195,8 +206,14 @@ def main(directory, fix, single_thread, full):
 
 
 def cli():
+    # Import version here to avoid circular import
+    from . import __version__
+
     parser = argparse.ArgumentParser(
         description="A tool to check and validate a Python code repository."
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"dazpycheck {__version__}"
     )
     parser.add_argument(
         "--full", action="store_true", help="Run all checks regardless of failures."

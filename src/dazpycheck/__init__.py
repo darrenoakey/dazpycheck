@@ -7,5 +7,5 @@ This tool enforces code quality standards, test coverage, and anti-mocking pract
 
 from .main import main, cli
 
-__version__ = "0.2.0"
+__version__ = "0.7.0"
 __all__ = ["main", "cli"]
