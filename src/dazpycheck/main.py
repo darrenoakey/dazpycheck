@@ -1,13 +1,14 @@
+import argparse
 import os
 import subprocess
 import sys
-from multiprocessing import Pool, cpu_count
-import coverage
-import argparse
 import unittest
+from multiprocessing import Pool, cpu_count
+
+import coverage
 
 # dazpycheck: ignore-banned-words
-BANNED_WORDS = ["mock", "fallback", "simulate", "pretend", "fake"]
+BANNED_WORDS = ["mock", "fallback", "simulate", "pretend", "fake", "skip"]
 BANNED_WORDS_SPIEL = """
 Banned word found. This isn't about specific words - it's about practices. Mocking is always bad.
 Fallbacks are bad - if something fails, we want it to fail, not pretend to work. If you need or
@@ -27,7 +28,7 @@ def run_command(command):
 
 def check_banned_words_in_file(file_path):
     try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(file_path, encoding="utf-8", errors="ignore") as f:
             content = f.read()
             if "dazpycheck: ignore-banned-words" in content:
                 return True, ""
@@ -62,28 +63,63 @@ def run_test_on_file(file_path):
 
     # Use relative path for coverage tracking to match how modules are imported
     source_module = os.path.basename(source_file)
-    cov = coverage.Coverage(source=[test_dir])
+
+    # Suppress coverage warnings by creating coverage with warnings disabled
+    import warnings
+
+    warnings.filterwarnings("ignore")
+    cov = coverage.Coverage(source=[test_dir], config_file=False)
     cov.start()
+
+    test_failed = False
+    test_output = ""
 
     # Try pytest first - but run it in-process, not as subprocess
     try:
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
         import pytest
 
-        # Run pytest programmatically to avoid subprocess issues
-        exit_code = pytest.main([file_path, "-q", "--tb=no"])
+        # Capture all output during test run
+        stdout_capture = io.StringIO()
+        stderr_capture = io.StringIO()
+
+        with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+            # Suppress pytest warnings and output for passing tests
+            exit_code = pytest.main([file_path, "-q", "--tb=short", "--disable-warnings"])
+
         pytest_success = exit_code == 0
+        if not pytest_success:
+            test_failed = True
+            test_output = stdout_capture.getvalue() + stderr_capture.getvalue()
     except ImportError:
         pytest_success = False
 
     if not pytest_success:
         # Try unittest as fallback
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
         suite = unittest.TestLoader().discover(
             start_dir=os.path.dirname(file_path), pattern=os.path.basename(file_path)
         )
-        result = unittest.TextTestRunner(
-            failfast=True, stream=open(os.devnull, "w")
-        ).run(suite)
-        if not result.wasSuccessful():
+
+        if not test_failed:  # Only capture if we haven't already captured from pytest
+            stdout_capture = io.StringIO()
+            stderr_capture = io.StringIO()
+
+            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+                result = unittest.TextTestRunner(failfast=True, stream=io.StringIO()).run(suite)
+
+            if not result.wasSuccessful():
+                test_failed = True
+                test_output = stdout_capture.getvalue() + stderr_capture.getvalue()
+        else:
+            # We already have output from pytest failure
+            result = unittest.TextTestRunner(failfast=True, stream=io.StringIO()).run(suite)
+
+        if not test_failed and not result.wasSuccessful():
             cov.stop()
             sys.path.pop(0)
             return (
@@ -91,20 +127,27 @@ def run_test_on_file(file_path):
                 f"Tests failed in {file_path} (tried both pytest and unittest)",
             )
 
+    if test_failed:
+        cov.stop()
+        sys.path.pop(0)
+        return (
+            False,
+            f"Tests failed in {file_path}:\n{test_output}",
+        )
+
     cov.stop()
     cov.save()
 
     try:
-        filename, statements, excluded, missing, formatted = cov.analysis2(
-            source_module
-        )
-        total_statements = len(statements)
-        executed_statements = total_statements - len(missing)
-        coverage_percentage = (
-            (executed_statements / total_statements) * 100
-            if total_statements > 0
-            else 100
-        )
+        # Suppress coverage warnings during analysis
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            filename, statements, excluded, missing, formatted = cov.analysis2(source_module)
+            total_statements = len(statements)
+            executed_statements = total_statements - len(missing)
+            coverage_percentage = (executed_statements / total_statements) * 100 if total_statements > 0 else 100
     except coverage.misc.NoSource:
         sys.path.pop(0)
         return (
@@ -125,27 +168,34 @@ def run_test_on_file(file_path):
     return True, ""
 
 
-def main(directory, fix, single_thread, full):
+def main(directory, fix, single_thread, full, pattern=None):
     if fix:
-        run_command(["python3", "-m", "black", directory])
+        # Run ruff format to fix formatting issues with line length 120
+        run_command(["python3", "-m", "ruff", "format", "--line-length=120", directory])
+        # Run ruff check with --fix to fix linting issues
+        run_command(["python3", "-m", "ruff", "check", "--fix", "--line-length=120", directory])
 
     py_files = []
     test_files = []
     for root, dirs, files in os.walk(directory):
         # Skip build, dist, and cache directories
-        dirs[:] = [
-            d
-            for d in dirs
-            if d not in ("__pycache__", "build", "dist", ".git", ".pytest_cache")
-        ]
+        dirs[:] = [d for d in dirs if d not in ("__pycache__", "build", "dist", ".git", ".pytest_cache")]
         for file in files:
             if file.endswith(".py"):
-                py_files.append(os.path.join(root, file))
+                full_path = os.path.join(root, file)
+                # Apply pattern filter if specified
+                if pattern is None or pattern in file:
+                    py_files.append(full_path)
             if file.endswith("_test.py"):
-                test_files.append(os.path.join(root, file))
+                full_path = os.path.join(root, file)
+                # Apply pattern filter if specified
+                if pattern is None or pattern in file:
+                    test_files.append(full_path)
 
-    # Initial scan for missing tests and banned words
-    has_errors = False
+    # Collect all errors by type before reporting
+    missing_test_errors = []
+    banned_word_errors = []
+
     for py_file in py_files:
         if not py_file.endswith("_test.py"):
             # Skip setup.py, __init__.py, and build directory
@@ -158,23 +208,31 @@ def main(directory, fix, single_thread, full):
                 continue
             test_file = py_file.replace(".py", "_test.py")
             if not os.path.exists(test_file):
-                has_errors = True
-                print(f"Missing test file for {py_file}", file=sys.stderr)
-                if not full:
-                    return 1
+                missing_test_errors.append(f"Missing test file for {py_file}")
 
         success, message = check_banned_words_in_file(py_file)
         if not success:
-            has_errors = True
-            print(message, file=sys.stderr)
-            if not full:
-                return 1
+            banned_word_errors.append(message)
+
+    # Report all errors by type
+    has_errors = False
+    if missing_test_errors:
+        has_errors = True
+        for error in missing_test_errors:
+            print(error, file=sys.stderr)
+        if not full:
+            return 1
+
+    if banned_word_errors:
+        has_errors = True
+        for error in banned_word_errors:
+            print(error, file=sys.stderr)
+        if not full:
+            return 1
 
     # Parallelizable jobs
     jobs = []
-    jobs.append(
-        (run_command, ["python3", "-m", "flake8", "--max-line-length=120", directory])
-    )
+    jobs.append((run_command, ["python3", "-m", "ruff", "check", "--line-length=120", directory]))
     for py_file in py_files:
         jobs.append((compile_file, py_file))
     for test_file in test_files:
@@ -209,22 +267,19 @@ def cli():
     # Import version here to avoid circular import
     from . import __version__
 
-    parser = argparse.ArgumentParser(
-        description="A tool to check and validate a Python code repository."
-    )
-    parser.add_argument(
-        "--version", action="version", version=f"dazpycheck {__version__}"
-    )
-    parser.add_argument(
-        "--full", action="store_true", help="Run all checks regardless of failures."
-    )
+    parser = argparse.ArgumentParser(description="A tool to check and validate a Python code repository.")
+    parser.add_argument("--version", action="version", version=f"dazpycheck {__version__}")
+    parser.add_argument("--full", action="store_true", help="Run all checks regardless of failures.")
     parser.add_argument(
         "--readonly",
         action="store_true",
         help="Only check for issues, don't modify files.",
     )
+    parser.add_argument("--single-thread", action="store_true", help="Run checks sequentially.")
     parser.add_argument(
-        "--single-thread", action="store_true", help="Run checks sequentially."
+        "--pattern",
+        type=str,
+        help="Only check files matching this pattern (e.g., 'llm_codex_cli').",
     )
     parser.add_argument(
         "directory",
@@ -235,4 +290,4 @@ def cli():
 
     args = parser.parse_args()
 
-    sys.exit(main(args.directory, not args.readonly, args.single_thread, args.full))
+    sys.exit(main(args.directory, not args.readonly, args.single_thread, args.full, args.pattern))

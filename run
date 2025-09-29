@@ -33,7 +33,7 @@ ensure_tools() {
   python - <<'PY'
 import importlib, sys
 missing = []
-for pkg in ("flake8", "pytest", "build", "twine", "keyring", "coverage"):
+for pkg in ("ruff", "pytest", "build", "twine", "keyring", "coverage"):
     try:
         importlib.import_module(pkg)
     except Exception:

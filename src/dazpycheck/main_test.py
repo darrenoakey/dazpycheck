@@ -2,16 +2,16 @@
 import os
 import shutil
 import unittest
+
 from dazpycheck.main import (
     check_banned_words_in_file,
     compile_file,
-    run_test_on_file,
     main,
+    run_test_on_file,
 )
 
 
 class TestDazpycheck(unittest.TestCase):
-
     def setUp(self):
         self.output_dir = "output"
         self.test_project_dir = os.path.join(self.output_dir, "test_project")
@@ -55,9 +55,7 @@ class TestDazpycheck(unittest.TestCase):
         source_file = os.path.join(self.test_project_dir, "my_module.py")
         test_file = os.path.join(self.test_project_dir, "my_module_test.py")
         with open(source_file, "w") as f:
-            f.write(
-                "def my_function():\n    return 1\n\n\ndef another_function():\n    return 2\n"
-            )
+            f.write("def my_function():\n    return 1\n\n\ndef another_function():\n    return 2\n")
         with open(test_file, "w") as f:
             f.write(
                 "import unittest\nfrom my_module import my_function\n\n\n"
@@ -74,9 +72,7 @@ class TestDazpycheck(unittest.TestCase):
         source_file = os.path.join(self.test_project_dir, "my_module.py")
         test_file = os.path.join(self.test_project_dir, "my_module_test.py")
         with open(source_file, "w") as f:
-            f.write(
-                "def my_function():\n    return 1\n\ndef another_function():\n    return 2\n"
-            )
+            f.write("def my_function():\n    return 1\n\ndef another_function():\n    return 2\n")
         with open(test_file, "w") as f:
             f.write(
                 "import unittest\nfrom my_module import my_function\n\n"
