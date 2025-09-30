@@ -50,6 +50,8 @@ def compile_file(file_path):
 
 
 def run_test_on_file(file_path):
+    import tempfile
+
     source_file = file_path.replace("_test.py", ".py")
     if not os.path.exists(source_file):
         return (
@@ -57,18 +59,36 @@ def run_test_on_file(file_path):
             f"Test file {file_path} exists but corresponding source file {source_file} does not.",
         )
 
-    # Add the directory of the test file to the python path
+    # Add the appropriate directory to python path
+    # If there's an __init__.py, this is a package - add parent directory instead
     test_dir = os.path.dirname(file_path)
-    sys.path.insert(0, test_dir)
+    init_file = os.path.join(test_dir, "__init__.py")
 
-    # Use relative path for coverage tracking to match how modules are imported
-    source_module = os.path.basename(source_file)
+    if os.path.exists(init_file):
+        # This is a package - add parent directory so imports work as "package.module"
+        path_to_add = os.path.dirname(test_dir)
+    else:
+        # Not a package - add the directory itself
+        path_to_add = test_dir
+
+    # Use a thread-safe approach: check if already in path before adding
+    path_needs_cleanup = path_to_add not in sys.path
+    if path_needs_cleanup:
+        sys.path.insert(0, path_to_add)
+
+    # Use absolute path for coverage tracking to ensure correct file matching
+    source_module = os.path.abspath(source_file)
 
     # Suppress coverage warnings by creating coverage with warnings disabled
+    # Create a unique temporary coverage data file for this test run to avoid conflicts
+    # Using a unique temp directory ensures SQLite databases don't conflict
     import warnings
 
     warnings.filterwarnings("ignore")
-    cov = coverage.Coverage(source=[test_dir], config_file=False)
+    coverage_temp_dir = tempfile.mkdtemp(prefix="dazpycheck_cov_")
+    coverage_data_file = os.path.join(coverage_temp_dir, ".coverage")
+
+    cov = coverage.Coverage(source=[test_dir], config_file=False, data_file=coverage_data_file)
     cov.start()
 
     test_failed = False
@@ -121,7 +141,15 @@ def run_test_on_file(file_path):
 
         if not test_failed and not result.wasSuccessful():
             cov.stop()
-            sys.path.pop(0)
+            # Clean up temporary coverage directory
+            try:
+                import shutil
+
+                shutil.rmtree(coverage_temp_dir, ignore_errors=True)
+            except Exception:
+                pass
+            if path_needs_cleanup:
+                sys.path.remove(path_to_add)
             return (
                 False,
                 f"Tests failed in {file_path} (tried both pytest and unittest)",
@@ -129,7 +157,15 @@ def run_test_on_file(file_path):
 
     if test_failed:
         cov.stop()
-        sys.path.pop(0)
+        # Clean up temporary coverage directory
+        try:
+            import shutil
+
+            shutil.rmtree(coverage_temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+        if path_needs_cleanup:
+            sys.path.remove(path_to_add)
         return (
             False,
             f"Tests failed in {file_path}:\n{test_output}",
@@ -149,21 +185,39 @@ def run_test_on_file(file_path):
             executed_statements = total_statements - len(missing)
             coverage_percentage = (executed_statements / total_statements) * 100 if total_statements > 0 else 100
     except coverage.misc.NoSource:
-        sys.path.pop(0)
+        # Clean up temporary coverage directory
+        try:
+            import shutil
+
+            shutil.rmtree(coverage_temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+        if path_needs_cleanup:
+            sys.path.remove(path_to_add)
         return (
             False,
             f"Coverage data not available for {source_file}. Module may not have been imported.",
         )
+    finally:
+        # Always clean up temporary coverage directory
+        try:
+            import shutil
+
+            shutil.rmtree(coverage_temp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
     if coverage_percentage < 50:
-        sys.path.pop(0)
+        if path_needs_cleanup:
+            sys.path.remove(path_to_add)
         return (
             False,
             f"Coverage for {source_file} is {coverage_percentage:.2f}%, which is less than 50%.",
         )
 
-    # Remove the directory from the python path
-    sys.path.pop(0)
+    # Remove the directory from the python path only if we added it
+    if path_needs_cleanup:
+        sys.path.remove(path_to_add)
 
     return True, ""
 
