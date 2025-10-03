@@ -107,12 +107,18 @@ def run_test_on_file(file_path):
 
         with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
             # Suppress pytest warnings and output for passing tests
-            exit_code = pytest.main([file_path, "-q", "--tb=short", "--disable-warnings"])
+            # Set timeout to 30 seconds per test
+            exit_code = pytest.main([file_path, "-q", "--tb=short", "--disable-warnings", "--timeout=30"])
 
         pytest_success = exit_code == 0
         if not pytest_success:
             test_failed = True
-            test_output = stdout_capture.getvalue() + stderr_capture.getvalue()
+            captured_output = stdout_capture.getvalue() + stderr_capture.getvalue()
+            # Check if it's a timeout error and provide clear message
+            if "Timeout" in captured_output or "timeout" in captured_output:
+                test_output = f"Test timeout in {file_path} (maximum 30s exceeded)\n{captured_output}"
+            else:
+                test_output = captured_output
     except ImportError:
         pytest_success = False
 
