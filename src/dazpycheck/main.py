@@ -8,7 +8,7 @@ from multiprocessing import Pool, cpu_count
 import coverage
 
 # dazpycheck: ignore-banned-words
-BANNED_WORDS = ["mock", "fallback", "simulate", "pretend", "fake", "skip"]
+BANNED_WORDS = ["mock", "fallback", "simulate", "pretend", "fake", "skip", "sleep", "dummy"]
 BANNED_WORDS_SPIEL = """
 Banned word found. This isn't about specific words - it's about practices. Mocking is always bad.
 Fallbacks are bad - if something fails, we want it to fail, not pretend to work. If you need or
