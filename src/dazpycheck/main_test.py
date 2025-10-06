@@ -64,7 +64,8 @@ class TestDazpycheck(unittest.TestCase):
             )
         success, message = run_test_on_file(test_file)
         self.assertFalse(success)
-        self.assertIn("less than 50%", message)
+        self.assertIn("Coverage failure", message)
+        self.assertIn("must directly cover", message)
 
     def test_integration_main(self):
         # This is an integration test that runs the main function

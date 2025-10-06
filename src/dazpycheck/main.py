@@ -216,9 +216,13 @@ def run_test_on_file(file_path):
     if coverage_percentage < 50:
         if path_needs_cleanup:
             sys.path.remove(path_to_add)
+        test_name = os.path.basename(file_path)
+        source_name = os.path.basename(source_file)
         return (
             False,
-            f"Coverage for {source_file} is {coverage_percentage:.2f}%, which is less than 50%.",
+            f"Coverage failure: {file_path} only achieved {coverage_percentage:.2f}% coverage of {source_file}.\n"
+            f"Each test file must achieve at least 50% coverage of its corresponding source file.\n"
+            f"Coverage from other test files does not count - {test_name} must directly cover {source_name}.",
         )
 
     # Remove the directory from the python path only if we added it
