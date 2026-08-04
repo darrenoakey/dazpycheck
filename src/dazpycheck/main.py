@@ -7,6 +7,28 @@ from multiprocessing import Pool, cpu_count
 
 import coverage
 
+ALWAYS_EXCLUDE = {
+    "__pycache__",
+    "build",
+    "dist",
+    ".git",
+    ".pytest_cache",
+    ".venv",
+    "venv",
+    "env",
+    ".env",
+    "node_modules",
+    ".tox",
+    ".nox",
+    ".mypy_cache",
+    ".ruff_cache",
+    "htmlcov",
+    ".coverage",
+    "eggs",
+    ".eggs",
+    "site-packages",
+}
+
 # dazpycheck: ignore-banned-words
 BANNED_WORDS = ["mock", "fallback", "simulate", "pretend", "fake", "skip", "sleep", "dummy"]
 BANNED_WORDS_SPIEL = """
@@ -45,11 +67,30 @@ def check_banned_words_in_file(file_path):
     return True, ""
 
 
+def should_require_test(file_path):
+    if file_path.endswith("/setup.py") or file_path == "setup.py":
+        return False
+    if file_path.endswith("/__init__.py"):
+        return False
+    if "/build/" in file_path:
+        return False
+    try:
+        with open(file_path, encoding="utf-8", errors="ignore") as f:
+            for i, line in enumerate(f):
+                if i >= 20:
+                    break
+                if "dazpycheck: no-test-required" in line:
+                    return False
+    except Exception:
+        pass
+    return True
+
+
 def compile_file(file_path):
     return run_command(["python", "-m", "py_compile", file_path])
 
 
-def run_test_on_file(file_path):
+def run_test_on_file(file_path, check_coverage=True):
     import tempfile
 
     source_file = file_path.replace("_test.py", ".py")
@@ -76,20 +117,24 @@ def run_test_on_file(file_path):
     if path_needs_cleanup:
         sys.path.insert(0, path_to_add)
 
-    # Use absolute path for coverage tracking to ensure correct file matching
-    source_module = os.path.abspath(source_file)
+    cov = None
+    coverage_temp_dir = None
 
-    # Suppress coverage warnings by creating coverage with warnings disabled
-    # Create a unique temporary coverage data file for this test run to avoid conflicts
-    # Using a unique temp directory ensures SQLite databases don't conflict
-    import warnings
+    if check_coverage:
+        # Use absolute path for coverage tracking to ensure correct file matching
+        source_module = os.path.abspath(source_file)
 
-    warnings.filterwarnings("ignore")
-    coverage_temp_dir = tempfile.mkdtemp(prefix="dazpycheck_cov_")
-    coverage_data_file = os.path.join(coverage_temp_dir, ".coverage")
+        # Suppress coverage warnings by creating coverage with warnings disabled
+        # Create a unique temporary coverage data file for this test run to avoid conflicts
+        # Using a unique temp directory ensures SQLite databases don't conflict
+        import warnings
 
-    cov = coverage.Coverage(source=[test_dir], config_file=False, data_file=coverage_data_file)
-    cov.start()
+        warnings.filterwarnings("ignore")
+        coverage_temp_dir = tempfile.mkdtemp(prefix="dazpycheck_cov_")
+        coverage_data_file = os.path.join(coverage_temp_dir, ".coverage")
+
+        cov = coverage.Coverage(source=[test_dir], config_file=False, data_file=coverage_data_file)
+        cov.start()
 
     test_failed = False
     test_output = ""
@@ -146,14 +191,15 @@ def run_test_on_file(file_path):
             result = unittest.TextTestRunner(failfast=True, stream=io.StringIO()).run(suite)
 
         if not test_failed and not result.wasSuccessful():
-            cov.stop()
-            # Clean up temporary coverage directory
-            try:
-                import shutil
+            if cov:
+                cov.stop()
+            if coverage_temp_dir:
+                try:
+                    import shutil
 
-                shutil.rmtree(coverage_temp_dir, ignore_errors=True)
-            except Exception:
-                pass
+                    shutil.rmtree(coverage_temp_dir, ignore_errors=True)
+                except Exception:
+                    pass
             if path_needs_cleanup:
                 sys.path.remove(path_to_add)
             return (
@@ -162,20 +208,26 @@ def run_test_on_file(file_path):
             )
 
     if test_failed:
-        cov.stop()
-        # Clean up temporary coverage directory
-        try:
-            import shutil
+        if cov:
+            cov.stop()
+        if coverage_temp_dir:
+            try:
+                import shutil
 
-            shutil.rmtree(coverage_temp_dir, ignore_errors=True)
-        except Exception:
-            pass
+                shutil.rmtree(coverage_temp_dir, ignore_errors=True)
+            except Exception:
+                pass
         if path_needs_cleanup:
             sys.path.remove(path_to_add)
         return (
             False,
             f"Tests failed in {file_path}:\n{test_output}",
         )
+
+    if not check_coverage:
+        if path_needs_cleanup:
+            sys.path.remove(path_to_add)
+        return True, ""
 
     cov.stop()
     cov.save()
@@ -191,13 +243,13 @@ def run_test_on_file(file_path):
             executed_statements = total_statements - len(missing)
             coverage_percentage = (executed_statements / total_statements) * 100 if total_statements > 0 else 100
     except coverage.misc.NoSource:
-        # Clean up temporary coverage directory
-        try:
-            import shutil
+        if coverage_temp_dir:
+            try:
+                import shutil
 
-            shutil.rmtree(coverage_temp_dir, ignore_errors=True)
-        except Exception:
-            pass
+                shutil.rmtree(coverage_temp_dir, ignore_errors=True)
+            except Exception:
+                pass
         if path_needs_cleanup:
             sys.path.remove(path_to_add)
         return (
@@ -205,13 +257,13 @@ def run_test_on_file(file_path):
             f"Coverage data not available for {source_file}. Module may not have been imported.",
         )
     finally:
-        # Always clean up temporary coverage directory
-        try:
-            import shutil
+        if coverage_temp_dir:
+            try:
+                import shutil
 
-            shutil.rmtree(coverage_temp_dir, ignore_errors=True)
-        except Exception:
-            pass
+                shutil.rmtree(coverage_temp_dir, ignore_errors=True)
+            except Exception:
+                pass
 
     if coverage_percentage < 50:
         if path_needs_cleanup:
@@ -232,18 +284,69 @@ def run_test_on_file(file_path):
     return True, ""
 
 
-def main(directory, fix, single_thread, full, pattern=None):
+def check_venv_keyring_safety(directory):
+    """Check that every venv in the repository has the safe keyring backend .pth.
+
+    The securitykeyring backend lives in ~/src/securitykeyring/src and is made
+    importable inside each venv via a zz_keyring_safe.pth file in the venv's
+    site-packages. This check fails if any venv under the directory is missing
+    that file, so keyring cannot silently fall back to a prompt-generating
+    backend on macOS.
+    """
+    if sys.platform != "darwin":
+        return True, ""
+
+    errors = []
+    venv_names = {".venv", "venv", "env"}
+
+    for root, dirs, _files in os.walk(directory):
+        # Enter venv directories but skip other common non-repo trees.
+        dirs[:] = [d for d in dirs if d not in ALWAYS_EXCLUDE or d in venv_names]
+
+        if not os.path.exists(os.path.join(root, "pyvenv.cfg")):
+            continue
+
+        site_packages_paths = []
+        for lib_dir in ("lib", "Lib"):
+            lib_path = os.path.join(root, lib_dir)
+            if not os.path.isdir(lib_path):
+                continue
+            try:
+                entries = os.listdir(lib_path)
+            except OSError:
+                continue
+            for entry in entries:
+                if entry.startswith("python"):
+                    sp = os.path.join(lib_path, entry, "site-packages")
+                    if os.path.isdir(sp):
+                        site_packages_paths.append(sp)
+
+        if not site_packages_paths:
+            errors.append(f"{root}: venv has no site-packages directory")
+        elif not any(os.path.exists(os.path.join(sp, "zz_keyring_safe.pth")) for sp in site_packages_paths):
+            errors.append(f"{root}: venv missing zz_keyring_safe.pth (safe keyring backend not available)")
+
+        # Do not recurse into the venv itself.
+        dirs[:] = []
+
+    if errors:
+        return False, "\n".join(errors)
+    return True, ""
+
+
+def main(directory, fix, single_thread, full, pattern=None, check_coverage=True, extra_excludes=None):
     if fix:
         # Run ruff format to fix formatting issues with line length 120
         run_command(["python3", "-m", "ruff", "format", "--line-length=120", directory])
         # Run ruff check with --fix to fix linting issues
         run_command(["python3", "-m", "ruff", "check", "--fix", "--line-length=120", directory])
 
+    exclude_dirs = ALWAYS_EXCLUDE | set(extra_excludes or [])
+
     py_files = []
     test_files = []
     for root, dirs, files in os.walk(directory):
-        # Skip build, dist, and cache directories
-        dirs[:] = [d for d in dirs if d not in ("__pycache__", "build", "dist", ".git", ".pytest_cache")]
+        dirs[:] = [d for d in dirs if d not in exclude_dirs]
         for file in files:
             if file.endswith(".py"):
                 full_path = os.path.join(root, file)
@@ -262,13 +365,7 @@ def main(directory, fix, single_thread, full, pattern=None):
 
     for py_file in py_files:
         if not py_file.endswith("_test.py"):
-            # Skip setup.py, __init__.py, and build directory
-            if (
-                py_file.endswith("/setup.py")
-                or py_file == "setup.py"
-                or py_file.endswith("/__init__.py")
-                or "/build/" in py_file
-            ):
+            if not should_require_test(py_file):
                 continue
             test_file = py_file.replace(".py", "_test.py")
             if not os.path.exists(test_file):
@@ -294,13 +391,20 @@ def main(directory, fix, single_thread, full, pattern=None):
         if not full:
             return 1
 
+    success, message = check_venv_keyring_safety(directory)
+    if not success:
+        has_errors = True
+        print(message, file=sys.stderr)
+        if not full:
+            return 1
+
     # Parallelizable jobs
     jobs = []
     jobs.append((run_command, ["python3", "-m", "ruff", "check", "--line-length=120", directory]))
     for py_file in py_files:
         jobs.append((compile_file, py_file))
     for test_file in test_files:
-        jobs.append((run_test_on_file, test_file))
+        jobs.append((run_test_on_file, test_file, check_coverage))
 
     if single_thread:
         for job, *args in jobs:
@@ -346,6 +450,17 @@ def cli():
         help="Only check files matching this pattern (e.g., 'llm_codex_cli').",
     )
     parser.add_argument(
+        "--no-coverage",
+        action="store_true",
+        help="Skip per-file coverage checks.",
+    )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        help="Additional directory names to exclude (repeatable).",
+    )
+    parser.add_argument(
         "directory",
         nargs="?",
         default=".",
@@ -354,4 +469,14 @@ def cli():
 
     args = parser.parse_args()
 
-    sys.exit(main(args.directory, not args.readonly, args.single_thread, args.full, args.pattern))
+    sys.exit(
+        main(
+            args.directory,
+            not args.readonly,
+            args.single_thread,
+            args.full,
+            args.pattern,
+            check_coverage=not args.no_coverage,
+            extra_excludes=args.exclude,
+        )
+    )

@@ -1,13 +1,16 @@
 # dazpycheck: ignore-banned-words
 import os
 import shutil
+import sys
 import unittest
 
 from dazpycheck.main import (
     check_banned_words_in_file,
+    check_venv_keyring_safety,
     compile_file,
     main,
     run_test_on_file,
+    should_require_test,
 )
 
 
@@ -188,6 +191,163 @@ class TestDazpycheck(unittest.TestCase):
             f.write("def other():\n    return 2\n")
         result = main(self.test_project_dir, True, True, False, pattern="specific")
         self.assertEqual(result, 0)
+
+    def test_venv_excluded_by_default(self):
+        venv_dir = os.path.join(self.test_project_dir, ".venv", "lib")
+        os.makedirs(venv_dir)
+        with open(os.path.join(venv_dir, "something.py"), "w") as f:
+            f.write("x = 1\n")
+        # Create a valid source+test so main doesn't fail for other reasons
+        source_file = os.path.join(self.test_project_dir, "ok.py")
+        test_file = os.path.join(self.test_project_dir, "ok_test.py")
+        with open(source_file, "w") as f:
+            f.write("def ok():\n    return 1\n")
+        with open(test_file, "w") as f:
+            f.write(
+                "import unittest\n\nfrom ok import ok\n\n"
+                "class T(unittest.TestCase):\n    def test_ok(self):\n"
+                "        self.assertEqual(ok(), 1)\n"
+            )
+        result = main(self.test_project_dir, True, True, False)
+        self.assertEqual(result, 0)
+
+    def test_custom_exclude_dir(self):
+        custom_dir = os.path.join(self.test_project_dir, "generated")
+        os.makedirs(custom_dir)
+        # File in generated/ has no test — would fail without exclude
+        with open(os.path.join(custom_dir, "auto.py"), "w") as f:
+            f.write("x = 1\n")
+        # Create a valid source+test so main doesn't fail for other reasons
+        source_file = os.path.join(self.test_project_dir, "ok2.py")
+        test_file = os.path.join(self.test_project_dir, "ok2_test.py")
+        with open(source_file, "w") as f:
+            f.write("def ok2():\n    return 2\n")
+        with open(test_file, "w") as f:
+            f.write(
+                "import unittest\n\nfrom ok2 import ok2\n\n"
+                "class T(unittest.TestCase):\n    def test_ok2(self):\n"
+                "        self.assertEqual(ok2(), 2)\n"
+            )
+        result = main(self.test_project_dir, True, True, False, extra_excludes=["generated"])
+        self.assertEqual(result, 0)
+
+    def test_no_test_required_marker(self):
+        # File with marker should not need a test file
+        source_file = os.path.join(self.test_project_dir, "no_test_needed.py")
+        with open(source_file, "w") as f:
+            f.write("# dazpycheck: no-test-required\ndef helper():\n    return 1\n")
+        # Create a valid source+test so main doesn't fail for other reasons
+        ok_source = os.path.join(self.test_project_dir, "ok3.py")
+        ok_test = os.path.join(self.test_project_dir, "ok3_test.py")
+        with open(ok_source, "w") as f:
+            f.write("def ok3():\n    return 3\n")
+        with open(ok_test, "w") as f:
+            f.write(
+                "import unittest\n\nfrom ok3 import ok3\n\n"
+                "class T(unittest.TestCase):\n    def test_ok3(self):\n"
+                "        self.assertEqual(ok3(), 3)\n"
+            )
+        result = main(self.test_project_dir, True, True, False)
+        self.assertEqual(result, 0)
+
+    def test_no_test_required_marker_must_be_near_top(self):
+        # Marker after line 20 should be ignored — test file still required
+        source_file = os.path.join(self.test_project_dir, "late_marker.py")
+        with open(source_file, "w") as f:
+            lines = ["# line\n"] * 20
+            lines.append("# dazpycheck: no-test-required\n")
+            lines.append("def func():\n    return 1\n")
+            f.writelines(lines)
+        result = main(self.test_project_dir, False, True, True)
+        self.assertEqual(result, 1)
+
+    def test_no_coverage_flag(self):
+        # A test with low coverage should pass with check_coverage=False
+        source_file = os.path.join(self.test_project_dir, "low_cov.py")
+        test_file = os.path.join(self.test_project_dir, "low_cov_test.py")
+        with open(source_file, "w") as f:
+            f.write(
+                "def a():\n    return 1\n\n\n"
+                "def b():\n    x = 2\n    y = 3\n    z = x + y\n    return z\n\n\n"
+                "def c():\n    x = 3\n    y = 4\n    z = x + y\n    return z\n\n\n"
+                "def d():\n    x = 4\n    y = 5\n    z = x + y\n    return z\n"
+            )
+        with open(test_file, "w") as f:
+            f.write(
+                "import unittest\n\nfrom low_cov import a\n\n"
+                "class T(unittest.TestCase):\n    def test_a(self):\n"
+                "        self.assertEqual(a(), 1)\n"
+            )
+        # With coverage, should fail
+        success, message = run_test_on_file(test_file, check_coverage=True)
+        self.assertFalse(success)
+        self.assertIn("Coverage failure", message)
+        # Without coverage, should pass
+        success, message = run_test_on_file(test_file, check_coverage=False)
+        self.assertTrue(success)
+
+    def test_should_require_test_function(self):
+        # setup.py
+        self.assertFalse(should_require_test("some/path/setup.py"))
+        self.assertFalse(should_require_test("setup.py"))
+        # __init__.py
+        self.assertFalse(should_require_test("pkg/__init__.py"))
+        # /build/ path
+        self.assertFalse(should_require_test("project/build/gen.py"))
+        # Normal file
+        normal = os.path.join(self.test_project_dir, "normal.py")
+        with open(normal, "w") as f:
+            f.write("x = 1\n")
+        self.assertTrue(should_require_test(normal))
+        # File with marker
+        marked = os.path.join(self.test_project_dir, "marked.py")
+        with open(marked, "w") as f:
+            f.write("# dazpycheck: no-test-required\nx = 1\n")
+        self.assertFalse(should_require_test(marked))
+
+    def test_check_venv_keyring_safety_no_venv(self):
+        success, message = check_venv_keyring_safety(self.test_project_dir)
+        self.assertTrue(success)
+        self.assertEqual(message, "")
+
+    def test_check_venv_keyring_safety_with_pth(self):
+        venv_dir = os.path.join(self.test_project_dir, ".venv")
+        site_packages = os.path.join(venv_dir, "lib", "python3.14", "site-packages")
+        os.makedirs(site_packages, exist_ok=True)
+        with open(os.path.join(venv_dir, "pyvenv.cfg"), "w") as f:
+            f.write("[venv]\n")
+        with open(os.path.join(site_packages, "zz_keyring_safe.pth"), "w") as f:
+            f.write("/Users/darrenoakey/src/securitykeyring/src\n")
+        success, message = check_venv_keyring_safety(self.test_project_dir)
+        self.assertTrue(success)
+        self.assertEqual(message, "")
+
+    def test_check_venv_keyring_safety_missing_pth(self):
+        venv_dir = os.path.join(self.test_project_dir, "venv")
+        site_packages = os.path.join(venv_dir, "lib", "python3.14", "site-packages")
+        os.makedirs(site_packages, exist_ok=True)
+        with open(os.path.join(venv_dir, "pyvenv.cfg"), "w") as f:
+            f.write("[venv]\n")
+        success, message = check_venv_keyring_safety(self.test_project_dir)
+        self.assertFalse(success)
+        self.assertIn("missing zz_keyring_safe.pth", message)
+
+    def test_check_venv_keyring_safety_non_darwin(self):
+        venv_dir = os.path.join(self.test_project_dir, ".venv")
+        site_packages = os.path.join(venv_dir, "lib", "python3.14", "site-packages")
+        os.makedirs(site_packages, exist_ok=True)
+        with open(os.path.join(venv_dir, "pyvenv.cfg"), "w") as f:
+            f.write("[venv]\n")
+        # Even without .pth, non-darwin platforms skip the check.
+        original_platform = sys.platform
+        try:
+            import sys as _sys
+
+            _sys.platform = "linux"
+            success, message = check_venv_keyring_safety(self.test_project_dir)
+            self.assertTrue(success)
+        finally:
+            _sys.platform = original_platform
 
 
 if __name__ == "__main__":
