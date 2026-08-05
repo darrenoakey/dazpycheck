@@ -16,7 +16,7 @@ deploy = "./run deploy"
 health = ""
 
 # Informational: the auto/service name this repo deploys.
-service = "dazpycheck"
+service = ""
 
 # Persistent worktree base for this repo (gate lives at <base>/gate).
 worktree_base = "/Volumes/Gumby/worktrees/greenline/dazpycheck"

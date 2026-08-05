@@ -6,7 +6,8 @@ import unittest
 
 from dazpycheck.main import (
     check_banned_words_in_file,
-    check_venv_keyring_safety,
+    check_legacy_secret_access,
+    cli,
     compile_file,
     main,
     run_test_on_file,
@@ -22,6 +23,35 @@ class TestDazpycheck(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.output_dir)
+
+    def test_cli_version_exits_successfully(self):
+        original_argv = sys.argv
+        try:
+            sys.argv = ["dazpycheck", "--version"]
+            with self.assertRaises(SystemExit) as caught:
+                cli()
+            self.assertEqual(caught.exception.code, 0)
+        finally:
+            sys.argv = original_argv
+
+    def test_cli_readonly_single_thread_exits_with_real_result(self):
+        original_argv = sys.argv
+        try:
+            sys.argv = [
+                "dazpycheck",
+                "--readonly",
+                "--single-thread",
+                "--no-coverage",
+                self.test_project_dir,
+            ]
+            with self.assertRaises(SystemExit) as caught:
+                cli()
+            self.assertEqual(caught.exception.code, 0)
+        finally:
+            sys.argv = original_argv
+
+    def test_should_require_test_handles_unreadable_source_path(self):
+        self.assertTrue(should_require_test(self.test_project_dir))
 
     def test_check_banned_words_in_file(self):
         file_path = os.path.join(self.test_project_dir, "bad_file.py")
@@ -54,11 +84,78 @@ class TestDazpycheck(unittest.TestCase):
         success, message = compile_file(file_path)
         self.assertFalse(success)
 
+    def test_credential_gate_and_test_policy_before_nested_coverage(self):
+        self.assertFalse(should_require_test("setup.py"))
+        self.assertFalse(should_require_test("pkg/__init__.py"))
+        self.assertFalse(should_require_test("project/build/generated.py"))
+
+        marked = os.path.join(self.test_project_dir, "marked.py")
+        with open(marked, "w") as source_file:
+            source_file.write("# dazpycheck: no-test-required\nvalue = 1\n")
+        self.assertFalse(should_require_test(marked))
+
+        forbidden = os.path.join(self.test_project_dir, "secrets.py")
+        with open(forbidden, "w") as source_file:
+            source_file.write(
+                "from keyring.backend import KeyringBackend\n"
+                "import subprocess\n"
+                "subprocess.Popen(['/usr/bin/security', 'find-generic-password'])\n"
+            )
+        success, message = check_legacy_secret_access(self.test_project_dir)
+        self.assertFalse(success)
+        self.assertIn("retired credential module import", message)
+        self.assertIn("retired macOS security command invocation", message)
+
+    def test_a_main_single_thread_without_nested_test_coverage(self):
+        source = os.path.join(self.test_project_dir, "standalone.py")
+        with open(source, "w") as source_file:
+            source_file.write("# dazpycheck: no-test-required\nvalue = 1\n")
+        result = main(
+            self.test_project_dir,
+            False,
+            True,
+            False,
+            check_coverage=False,
+        )
+        self.assertEqual(result, 0)
+
+    def test_a_main_reports_each_preflight_failure(self):
+        missing_test_source = os.path.join(self.test_project_dir, "missing_test.py")
+        with open(missing_test_source, "w") as source_file:
+            source_file.write("value = 1\n")
+        self.assertEqual(main(self.test_project_dir, False, True, False), 1)
+
+        shutil.rmtree(self.test_project_dir)
+        os.makedirs(self.test_project_dir)
+        banned_source = os.path.join(self.test_project_dir, "banned.py")
+        banned_test = os.path.join(self.test_project_dir, "banned_test.py")
+        with open(banned_source, "w") as source_file:
+            source_file.write("value = 'mock'\n")
+        with open(banned_test, "w") as test_file:
+            test_file.write("# dazpycheck: ignore-banned-words\n")
+        self.assertEqual(main(self.test_project_dir, False, True, False), 1)
+
+        shutil.rmtree(self.test_project_dir)
+        os.makedirs(self.test_project_dir)
+        credential_source = os.path.join(self.test_project_dir, "credential.py")
+        credential_test = os.path.join(self.test_project_dir, "credential_test.py")
+        with open(credential_source, "w") as source_file:
+            source_file.write("import keyring\n")
+        with open(credential_test, "w") as test_file:
+            test_file.write("# dazpycheck: ignore-banned-words\n")
+        self.assertEqual(main(self.test_project_dir, False, True, False), 1)
+
     def test_run_test_on_file_with_low_coverage(self):
         source_file = os.path.join(self.test_project_dir, "my_module.py")
         test_file = os.path.join(self.test_project_dir, "my_module_test.py")
         with open(source_file, "w") as f:
-            f.write("def my_function():\n    return 1\n\n\ndef another_function():\n    return 2\n")
+            f.write(
+                "def my_function():\n    return 1\n\n"
+                "def another_function(value):\n    if value:\n        return 2\n    return 0\n\n"
+                "def third_function(value):\n    if value:\n        return 3\n    return 0\n\n"
+                "def fourth_function(value):\n    if value:\n        return 4\n    return 0\n\n"
+                "def fifth_function(value):\n    if value:\n        return 5\n    return 0\n"
+            )
         with open(test_file, "w") as f:
             f.write(
                 "import unittest\n\nfrom my_module import my_function\n\n"
@@ -305,49 +402,29 @@ class TestDazpycheck(unittest.TestCase):
             f.write("# dazpycheck: no-test-required\nx = 1\n")
         self.assertFalse(should_require_test(marked))
 
-    def test_check_venv_keyring_safety_no_venv(self):
-        success, message = check_venv_keyring_safety(self.test_project_dir)
+    def test_a_legacy_secret_access_accepts_daz_secrets(self):
+        source = os.path.join(self.test_project_dir, "secrets.py")
+        with open(source, "w") as source_file:
+            source_file.write("from daz_secrets import Client\nClient().get('service', 'account')\n")
+        success, message = check_legacy_secret_access(self.test_project_dir)
         self.assertTrue(success)
         self.assertEqual(message, "")
 
-    def test_check_venv_keyring_safety_with_pth(self):
-        venv_dir = os.path.join(self.test_project_dir, ".venv")
-        site_packages = os.path.join(venv_dir, "lib", "python3.14", "site-packages")
-        os.makedirs(site_packages, exist_ok=True)
-        with open(os.path.join(venv_dir, "pyvenv.cfg"), "w") as f:
-            f.write("[venv]\n")
-        with open(os.path.join(site_packages, "zz_keyring_safe.pth"), "w") as f:
-            f.write("/Users/darrenoakey/src/securitykeyring/src\n")
-        success, message = check_venv_keyring_safety(self.test_project_dir)
-        self.assertTrue(success)
-        self.assertEqual(message, "")
-
-    def test_check_venv_keyring_safety_missing_pth(self):
-        venv_dir = os.path.join(self.test_project_dir, "venv")
-        site_packages = os.path.join(venv_dir, "lib", "python3.14", "site-packages")
-        os.makedirs(site_packages, exist_ok=True)
-        with open(os.path.join(venv_dir, "pyvenv.cfg"), "w") as f:
-            f.write("[venv]\n")
-        success, message = check_venv_keyring_safety(self.test_project_dir)
+    def test_a_legacy_secret_access_rejects_retired_module(self):
+        source = os.path.join(self.test_project_dir, "secrets.py")
+        with open(source, "w") as source_file:
+            source_file.write("import keyring\n")
+        success, message = check_legacy_secret_access(self.test_project_dir)
         self.assertFalse(success)
-        self.assertIn("missing zz_keyring_safe.pth", message)
+        self.assertIn("retired credential module import", message)
 
-    def test_check_venv_keyring_safety_non_darwin(self):
-        venv_dir = os.path.join(self.test_project_dir, ".venv")
-        site_packages = os.path.join(venv_dir, "lib", "python3.14", "site-packages")
-        os.makedirs(site_packages, exist_ok=True)
-        with open(os.path.join(venv_dir, "pyvenv.cfg"), "w") as f:
-            f.write("[venv]\n")
-        # Even without .pth, non-darwin platforms skip the check.
-        original_platform = sys.platform
-        try:
-            import sys as _sys
-
-            _sys.platform = "linux"
-            success, message = check_venv_keyring_safety(self.test_project_dir)
-            self.assertTrue(success)
-        finally:
-            _sys.platform = original_platform
+    def test_a_legacy_secret_access_rejects_security_command(self):
+        source = os.path.join(self.test_project_dir, "secrets.py")
+        with open(source, "w") as source_file:
+            source_file.write("import subprocess\nsubprocess.run(['/usr/bin/security', 'find-generic-password'])\n")
+        success, message = check_legacy_secret_access(self.test_project_dir)
+        self.assertFalse(success)
+        self.assertIn("retired macOS security command invocation", message)
 
 
 if __name__ == "__main__":

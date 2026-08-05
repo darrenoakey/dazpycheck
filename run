@@ -5,8 +5,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$ROOT_DIR/src"
-VERSION_FILE="$ROOT_DIR/src/dazpycheck/__init__.py"
-
 red()   { printf "\033[31m%s\033[0m\n" "$*"; }
 green() { printf "\033[32m%s\033[0m\n" "$*"; }
 yellow(){ printf "\033[33m%s\033[0m\n" "$*"; }
@@ -19,7 +17,8 @@ Usage: ./run <command>
 Commands:
   check       Run all checks on the codebase
   test        Run all tests
-  release     Bump version, build, and upload to PyPI
+  release     Build and upload the committed version to PyPI
+  deploy      Alias for release (Greenline)
   help        Show this help
 
 Examples:
@@ -33,7 +32,7 @@ ensure_tools() {
   python - <<'PY'
 import importlib, sys
 missing = []
-for pkg in ("ruff", "pytest", "build", "twine", "keyring", "coverage"):
+for pkg in ("ruff", "pytest", "build", "twine", "daz_secrets", "coverage"):
     try:
         importlib.import_module(pkg)
     except Exception:
@@ -58,63 +57,13 @@ cmd_test() {
 cmd_build() {
   blue "Cleaning and building…"
   rm -rf dist build *.egg-info
-  PIP_CONFIG_FILE=/dev/null python -m build
+  python -m build
   green "Build complete"
 }
 
 cmd_release() {
-    blue "Bumping minor version…"
-    python - <<PY
-from pathlib import Path
-import re
-p = Path("$VERSION_FILE")
-text = p.read_text(encoding="utf-8")
-m = re.search(r"^__version__ = ['\"](\d+)\.(\d+)\.(\d+)['\"]", text, re.M)
-if not m:
-    raise SystemExit("ERROR: version not found in __init__.py file")
-maj, minor, patch = map(int, m.groups())
-minor, patch = minor + 1, 0
-new = f"{maj}.{minor}.{patch}"
-text = re.sub(r"^(__version__ = ['\"])(\d+)\.(\d+)\.(\d+)(['\"])", rf"\g<1>{new}\g<5>", text, flags=re.M)
-p.write_text(text, encoding="utf-8")
-print(new)
-PY
-
-    NEW_VER=$(python - <<PY
-from pathlib import Path
-import re
-p = Path("$VERSION_FILE")
-text = p.read_text(encoding="utf-8")
-m = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]", text, re.M)
-if m:
-    print(m.group(1), end="")
-PY
-)
-    green "Version bumped to v$NEW_VER"
-
-    blue "Installing build + twine if missing…"
-    python -m pip install -U build twine >/dev/null 2>&1 || true
-
-    cmd_build
-
-    blue "Fetching PyPI token from keyring…"
-    RAW_TOKEN=$(python - <<'PY'
-import keyring
-val = keyring.get_password("pypi", "api_token") or ""
-print(val, end="")
-PY
-)
-    if [ -z "$RAW_TOKEN" ]; then
-        red "ERROR: No API token in keyring for service 'pypi' (user: api_token)"
-        echo "Add it with:  python -m keyring set pypi api_token" >&2
-        exit 1
-    fi
-
-    export TWINE_USERNAME="__token__"
-    export TWINE_PASSWORD="$RAW_TOKEN"
-    blue "Uploading distributions via twine…"
-    twine upload dist/*
-    green "Release uploaded"
+    cmd_check
+    PYTHONPATH="$SRC_DIR${PYTHONPATH+:$PYTHONPATH}" python -m dazpycheck.release
 }
 
 main() {
@@ -123,7 +72,7 @@ main() {
     check)   cmd_check ;;
     test)    cmd_test ;;
     build)   cmd_build ;;
-    release) cmd_release ;;
+    release|deploy) cmd_release ;;
     help|*)  usage ;;
   esac
 }

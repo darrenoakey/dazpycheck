@@ -17,6 +17,12 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+dependencies = [
+  "coverage>=7.0",
+  "pytest>=7.0",
+  "pytest-timeout>=2.0",
+  "ruff>=0.1.0",
+]
 
 [project.scripts]
 dazpycheck = "dazpycheck.main:cli"
