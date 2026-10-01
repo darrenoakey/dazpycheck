@@ -20,11 +20,12 @@ def _python_for(test_path: Path) -> str:
     return sys.executable
 
 
-# Per-test hangs are already caught by the inner pytest --timeout=30. The
-# outer wall-clock budget only guards against pre-test hangs (collection,
-# fixtures, coverage storms); it must be generous enough for a file of many
-# slow real integration tests on a loaded machine, or it manufactures false
-# failures unrelated to the code under test.
+# Per-test hangs are caught by the inner pytest timeout. Both budgets must
+# be generous enough for slow real integration tests (xcodebuild, simctl,
+# device tools) on a loaded machine, or they manufacture false failures
+# unrelated to the code under test. The inner budget stays well under the
+# outer file budget so a hung file still dies file-locally first.
+TEST_TIMEOUT_SECONDS = 180
 FILE_TIMEOUT_SECONDS = 600
 
 
@@ -47,7 +48,7 @@ def run_test_on_file(file_path: str, check_coverage: bool = True) -> tuple[bool,
             "-q",
             "--tb=short",
             "--disable-warnings",
-            "--timeout=30",
+            "--timeout=" + str(TEST_TIMEOUT_SECONDS),
         ]
         if check_coverage:
             command = [
@@ -63,7 +64,7 @@ def run_test_on_file(file_path: str, check_coverage: bool = True) -> tuple[bool,
                 "-q",
                 "--tb=short",
                 "--disable-warnings",
-                "--timeout=30",
+                "--timeout=" + str(TEST_TIMEOUT_SECONDS),
             ]
         process = subprocess.Popen(
             command,
