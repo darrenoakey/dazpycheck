@@ -20,6 +20,14 @@ def _python_for(test_path: Path) -> str:
     return sys.executable
 
 
+# Per-test hangs are already caught by the inner pytest --timeout=30. The
+# outer wall-clock budget only guards against pre-test hangs (collection,
+# fixtures, coverage storms); it must be generous enough for a file of many
+# slow real integration tests on a loaded machine, or it manufactures false
+# failures unrelated to the code under test.
+FILE_TIMEOUT_SECONDS = 600
+
+
 def run_test_on_file(file_path: str, check_coverage: bool = True) -> tuple[bool, str]:
     """Run one real test file in an isolated process and enforce direct coverage."""
     test_path = Path(file_path).resolve()
@@ -67,11 +75,11 @@ def run_test_on_file(file_path: str, check_coverage: bool = True) -> tuple[bool,
             start_new_session=True,
         )
         try:
-            output, _ = process.communicate(timeout=40)
+            output, _ = process.communicate(timeout=FILE_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait()
-            return False, f"Test timeout in {file_path} (maximum 40s exceeded)"
+            return False, f"Test timeout in {file_path} (maximum {FILE_TIMEOUT_SECONDS}s exceeded)"
         if process.returncode != 0:
             return False, f"Tests failed in {file_path}:\n{output}"
         if not check_coverage:
