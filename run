@@ -62,7 +62,10 @@ cmd_build() {
 }
 
 cmd_release() {
-    cmd_check
+    # No cmd_check here: the greenline gate runs ./run check on this exact
+    # commit immediately before deploy, so re-running the full suite inside
+    # deploy just doubles the release wall time. Deploy = build + publish +
+    # live PyPI verification (the health check), per greenline.toml.
     PYTHONPATH="$SRC_DIR${PYTHONPATH+:$PYTHONPATH}" python -m dazpycheck.release
 }
 

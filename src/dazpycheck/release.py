@@ -51,7 +51,11 @@ def main() -> int:
                 break
             if attempt == 11:
                 raise RuntimeError(f"published {__version__}, but PyPI indexing verification failed")
-            time.sleep(5)
+            # PyPI's simple index usually lags the upload by only a second or
+            # two; poll quickly instead of sitting out a fixed 5s penalty per
+            # attempt. Same number of real verification attempts, same hard
+            # failure after the last one.
+            time.sleep(2)
 
     for directory in (root / "dist", root / "build"):
         if directory.exists():
